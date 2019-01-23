@@ -1809,3 +1809,75 @@ int cifsd_vfs_xattr_stream_name(char *stream_name,
 
 	return xattr_stream_name_size;
 }
+
+int cifsd_vfs_copy_file_ranges(struct cifsd_work *work,
+				struct cifsd_file *src_fp,
+				struct cifsd_file *dst_fp,
+				struct srv_copychunk *chunks,
+				unsigned int chunk_count,
+				unsigned int *chunk_count_written,
+				unsigned int *chunk_size_written,
+				loff_t *total_size_written)
+{
+	unsigned int i;
+	loff_t src_off, dst_off, src_file_size;
+	size_t len;
+	int ret;
+
+	*chunk_count_written = 0;
+	*chunk_size_written = 0;
+	*total_size_written = 0;
+
+	if (!(src_fp->daccess & (FILE_READ_DATA_LE | FILE_GENERIC_READ_LE |
+			FILE_GENERIC_ALL_LE | FILE_MAXIMAL_ACCESS_LE |
+			FILE_EXECUTE_LE))) {
+		cifsd_err("no right to read(%s)\n", FP_FILENAME(src_fp));
+		return -EACCES;
+	}
+	if (!(dst_fp->daccess & (FILE_WRITE_DATA_LE | FILE_APPEND_DATA_LE |
+			FILE_GENERIC_WRITE_LE | FILE_GENERIC_ALL_LE |
+			FILE_MAXIMAL_ACCESS_LE))) {
+		cifsd_err("no right to write(%s)\n", FP_FILENAME(dst_fp));
+		return -EACCES;
+	}
+
+	if (src_fp->is_stream || dst_fp->is_stream)
+		return -EBADF;
+
+	if (oplocks_enable) {
+		smb_break_all_levII_oplock(work->sess->conn, dst_fp, 1);
+	}
+
+	for (i = 0; i < chunk_count; i++) {
+		src_off = le64_to_cpu(chunks[i].SourceOffset);
+		dst_off = le64_to_cpu(chunks[i].TargetOffset);
+		len = le32_to_cpu(chunks[i].Length);
+
+		if (check_lock_range(src_fp->filp, src_off,
+				src_off + len - 1, READ))
+			return -EAGAIN;
+		if (check_lock_range(dst_fp->filp, dst_off,
+				dst_off + len - 1, WRITE))
+			return -EAGAIN;
+	}
+
+	src_file_size = i_size_read(file_inode(src_fp->filp));
+
+	for (i = 0; i < chunk_count; i++) {
+		src_off = le64_to_cpu(chunks[i].SourceOffset);
+		dst_off = le64_to_cpu(chunks[i].TargetOffset);
+		len = le32_to_cpu(chunks[i].Length);
+
+		if (src_off + len > src_file_size)
+			return -E2BIG;
+
+		ret = vfs_copy_file_range(src_fp->filp, src_off,
+				dst_fp->filp, dst_off, len, 0);
+		if (ret < 0)
+			return ret;
+
+		*chunk_count_written += 1;
+		*total_size_written += ret;
+	}
+	return 0;
+}
