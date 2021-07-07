@@ -13,6 +13,7 @@
 #include "oplock.h"
 #include "vfs.h"
 #include "connection.h"
+#include "misc.h"
 #include "mgmt/tree_connect.h"
 #include "mgmt/user_session.h"
 #include "smb_common.h"
@@ -29,6 +30,37 @@ static DEFINE_RWLOCK(inode_hash_lock);
 static struct ksmbd_file_table global_ft;
 static atomic_long_t fd_limit;
 static struct kmem_cache *filp_cache;
+
+#ifdef CONFIG_PROC_FS
+static int proc_show_files(struct seq_file *m, void *v)
+{
+	struct ksmbd_file	*fp = NULL;
+	unsigned int		id;
+
+	seq_printf(m,
+		"#<tree id> <persistent id> <volatile id> <count> <name>\n");
+
+	read_lock(&global_ft.lock);
+	idr_for_each_entry(global_ft.idr, fp, id) {
+		seq_printf(m, "%#x %#x %#x %#x %s\n",
+			   fp->tcon->id,
+			   fp->persistent_id,
+			   fp->volatile_id,
+			   atomic_read(&fp->refcount),
+			   fp->filename);
+	}
+	read_unlock(&global_ft.lock);
+	return 0;
+}
+
+static int create_proc_files(void)
+{
+	ksmbd_proc_create("files", proc_show_files, NULL);
+	return 0;
+}
+#else
+static int create_proc_files(void) { return 0; }
+#endif
 
 void ksmbd_set_fd_limit(unsigned long limit)
 {
@@ -652,6 +684,7 @@ void ksmbd_close_session_fds(struct ksmbd_work *work)
 
 int ksmbd_init_global_file_table(void)
 {
+	create_proc_files();
 	return ksmbd_init_file_table(&global_ft);
 }
 
