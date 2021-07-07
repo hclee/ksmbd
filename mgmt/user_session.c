@@ -13,6 +13,7 @@
 #include "user_session.h"
 #include "user_config.h"
 #include "tree_connect.h"
+#include "share_config.h"
 #include "../transport_ipc.h"
 #include "../connection.h"
 #include "../vfs_cache.h"
@@ -30,6 +31,125 @@ struct ksmbd_session_rpc {
 	unsigned int		method;
 	struct list_head	list;
 };
+
+#ifdef CONFIG_PROC_FS
+static const char *session_state_string(struct ksmbd_session *session)
+{
+	if (session->state == SMB2_SESSION_VALID)
+		return "valid";
+	else if (session->state == SMB2_SESSION_IN_PROGRESS)
+		return "in progress";
+	else if (session->state == SMB2_SESSION_EXPIRED)
+		return "expired";
+	else
+		return "";
+}
+
+static const char *session_user_name(struct ksmbd_session *session)
+{
+	if (user_guest(session->user))
+		return "(Guest)";
+	else if (user_anonymous(session->user))
+		return "(Anonymous)";
+	return session->user->name;
+}
+
+static int show_proc_session(struct seq_file *m, void *v)
+{
+	struct ksmbd_session *session;
+	struct ksmbd_tree_connect *tree_conn;
+	struct ksmbd_share_config *share_conf;
+	struct channel *chan;
+	unsigned long id;
+	int i = 0;
+
+	session = (struct ksmbd_session *)m->private;
+	get_session(session);
+
+	seq_printf(m, "client: %s\n", session->conn->client_name);
+	seq_printf(m, "user: %s\n", session_user_name(session));
+	seq_printf(m, "id: %llu\n", session->id);
+	seq_printf(m, "state: %s\n", session_state_string(session));
+	seq_puts(m, "flags:  ");
+	if (session->sign)
+		seq_puts(m, "signed");
+	if (session->enc)
+		seq_puts(m, " encrypted ");
+	seq_putc(m, '\n');
+
+	i = 0;
+	list_for_each_entry(chan, &session->ksmbd_chann_list, chann_list) {
+		i++;
+	}
+	seq_printf(m, "channels %d\n", i);
+
+	i = 0;
+	xa_for_each(&session->tree_conns, id, tree_conn) {
+		share_conf = tree_conn->share_conf;
+		seq_printf(m, "share%d: \\\\%s\\%s %d ", i++,
+			   session->conn->client_name, share_conf->name,
+			   tree_conn->id);
+		if (test_share_config_flag(share_conf, KSMBD_SHARE_FLAG_PIPE))
+			seq_printf(m, "%s ", "pipe");
+		else
+			seq_printf(m, "%s ", "disk");
+		seq_putc(m, '\n');
+	}
+
+	put_session(session);
+	return 0;
+}
+
+static int create_proc_session(struct ksmbd_session *sess)
+{
+	char name[30];
+
+	snprintf(name, sizeof(name), "sessions/%llu", sess->id);
+	sess->proc_entry = ksmbd_proc_create(name, show_proc_session, sess);
+	return 0;
+}
+
+static void delete_proc_session(struct ksmbd_session *sess)
+{
+	if (sess->proc_entry)
+		proc_remove(sess->proc_entry);
+}
+
+static int show_proc_sessions(struct seq_file *m, void *v)
+{
+	struct ksmbd_session *session;
+	int i;
+
+	seq_puts(m, "#<client> <user> <sess id> <state>\n");
+
+	down_read(&sessions_table_lock);
+	hash_for_each(sessions_table, i, session, hlist) {
+		get_session(session);
+
+		seq_printf(m, "%s %s %llu %s\n",
+			   session->conn->client_name,
+			   session_user_name(session),
+			   session->id,
+			   session_state_string(session));
+
+		put_session(session);
+	}
+	up_read(&sessions_table_lock);
+	return 0;
+}
+
+static int create_proc_sessions(void)
+{
+	if (ksmbd_proc_create("sessions/sessions",
+			      show_proc_sessions, NULL) == NULL)
+		return -ENOMEM;
+	return 0;
+}
+#else
+static int create_proc_sessions(void) { return 0; }
+static int create_proc_session(struct ksmbd_session *sess) { return 0; }
+static void delete_proc_session(struct ksmbd_session *sess) {}
+#endif
 
 static void free_channel_list(struct ksmbd_session *sess)
 {
@@ -169,6 +289,8 @@ void ksmbd_session_destroy(struct ksmbd_session *sess)
 	hash_del(&sess->hlist);
 	up_write(&sessions_table_lock);
 #endif
+
+	delete_proc_session(sess);
 
 	if (sess->user)
 		ksmbd_free_user(sess->user);
@@ -369,6 +491,8 @@ static struct ksmbd_session *__session_create(int protocol)
 		hash_add(sessions_table, &sess->hlist, sess->id);
 		up_write(&sessions_table_lock);
 	}
+
+	create_proc_session(sess);
 	ksmbd_counter_inc(KSMBD_COUNTER_SESSIONS);
 	return sess;
 
@@ -407,4 +531,10 @@ void ksmbd_release_tree_conn_id(struct ksmbd_session *sess, int id)
 {
 	if (id >= 0)
 		ksmbd_release_id(&sess->tree_conn_ida, id);
+}
+
+int ksmbd_sessions_init(void)
+{
+	create_proc_sessions();
+	return 0;
 }

@@ -44,7 +44,6 @@ struct ksmbd_session {
 
 	bool				sign;
 	bool				enc;
-	bool				is_anonymous;
 
 	int				state;
 	__u8				*Preauth_HashValue;
@@ -65,6 +64,10 @@ struct ksmbd_session {
 	struct list_head		sessions_entry;
 	struct ksmbd_file_table		file_table;
 	atomic_t			refcnt;
+
+#ifdef CONFIG_PROC_FS
+	struct proc_dir_entry		*proc_entry;
+#endif
 };
 
 static inline int test_session_flag(struct ksmbd_session *sess, int bit)
@@ -82,6 +85,7 @@ static inline void clear_session_flag(struct ksmbd_session *sess, int bit)
 	sess->flags &= ~bit;
 }
 
+int ksmbd_sessions_init(void);
 #ifdef CONFIG_SMB_INSECURE_SERVER
 struct ksmbd_session *ksmbd_smb1_session_create(void);
 #endif
