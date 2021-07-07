@@ -35,7 +35,7 @@ enum {
 	KSMBD_SESS_NEED_NEGOTIATE
 };
 
-struct ksmbd_stats {
+struct ksmbd_conn_stats {
 	atomic_t			open_files_count;
 	atomic64_t			request_served;
 };
@@ -70,7 +70,7 @@ struct ksmbd_conn {
 	struct list_head		requests;
 	struct list_head		async_requests;
 	int				connection_type;
-	struct ksmbd_stats		stats;
+	struct ksmbd_conn_stats		stats;
 	char				ClientGUID[SMB2_CLIENT_GUID_SIZE];
 	union {
 		/* pending trans request table */
@@ -107,6 +107,8 @@ struct ksmbd_conn {
 	__le16				compress_algorithm;
 	bool				posix_ext_supported;
 	bool				binding;
+
+	char				client_name[81];
 };
 
 struct ksmbd_conn_ops {
