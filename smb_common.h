@@ -467,6 +467,7 @@ struct filesystem_posix_info {
 
 struct smb_version_ops {
 	u16 (*get_cmd_val)(struct ksmbd_work *swork);
+	void (*inc_reqs)(unsigned int cmd);
 	int (*init_rsp_hdr)(struct ksmbd_work *swork);
 	void (*set_rsp_status)(struct ksmbd_work *swork, __le32 err);
 	int (*allocate_rsp_buf)(struct ksmbd_work *work);

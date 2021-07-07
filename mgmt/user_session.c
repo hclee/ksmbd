@@ -16,6 +16,8 @@
 #include "../transport_ipc.h"
 #include "../connection.h"
 #include "../vfs_cache.h"
+#include "../misc.h"
+#include "../stats.h"
 
 static DEFINE_IDA(session_ida);
 
@@ -154,6 +156,7 @@ void ksmbd_session_destroy(struct ksmbd_session *sess)
 		return;
 
 	list_del(&sess->sessions_entry);
+	ksmbd_counter_dec(KSMBD_COUNTER_SESSIONS);
 
 #ifdef CONFIG_SMB_INSECURE_SERVER
 	if (IS_SMB2(sess->conn)) {
@@ -366,6 +369,7 @@ static struct ksmbd_session *__session_create(int protocol)
 		hash_add(sessions_table, &sess->hlist, sess->id);
 		up_write(&sessions_table_lock);
 	}
+	ksmbd_counter_inc(KSMBD_COUNTER_SESSIONS);
 	return sess;
 
 error:

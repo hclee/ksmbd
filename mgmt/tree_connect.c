@@ -12,6 +12,7 @@
 
 #include "../transport_ipc.h"
 #include "../connection.h"
+#include "../stats.h"
 
 #include "tree_connect.h"
 #include "user_config.h"
@@ -71,6 +72,7 @@ ksmbd_tree_conn_connect(struct ksmbd_session *sess, char *share_name)
 		status.ret = -ENOMEM;
 		goto out_error;
 	}
+	ksmbd_counter_inc(KSMBD_COUNTER_TREE_CONNS);
 	kvfree(resp);
 	return status;
 
@@ -93,6 +95,7 @@ int ksmbd_tree_conn_disconnect(struct ksmbd_session *sess,
 	xa_erase(&sess->tree_conns, tree_conn->id);
 	ksmbd_share_config_put(tree_conn->share_conf);
 	kfree(tree_conn);
+	ksmbd_counter_dec(KSMBD_COUNTER_TREE_CONNS);
 	return ret;
 }
 

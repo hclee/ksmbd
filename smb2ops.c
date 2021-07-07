@@ -145,6 +145,7 @@ static struct smb_version_values smb311_server_values = {
 
 static struct smb_version_ops smb2_0_server_ops = {
 	.get_cmd_val		=	get_smb2_cmd_val,
+	.inc_reqs		=	smb2_inc_reqs,
 	.init_rsp_hdr		=	init_smb2_rsp_hdr,
 	.set_rsp_status		=	set_smb2_rsp_status,
 	.allocate_rsp_buf       =       smb2_allocate_rsp_buf,
@@ -158,6 +159,7 @@ static struct smb_version_ops smb2_0_server_ops = {
 
 static struct smb_version_ops smb3_0_server_ops = {
 	.get_cmd_val		=	get_smb2_cmd_val,
+	.inc_reqs		=	smb2_inc_reqs,
 	.init_rsp_hdr		=	init_smb2_rsp_hdr,
 	.set_rsp_status		=	set_smb2_rsp_status,
 	.allocate_rsp_buf       =       smb2_allocate_rsp_buf,
@@ -176,6 +178,7 @@ static struct smb_version_ops smb3_0_server_ops = {
 
 static struct smb_version_ops smb3_11_server_ops = {
 	.get_cmd_val		=	get_smb2_cmd_val,
+	.inc_reqs		=	smb2_inc_reqs,
 	.init_rsp_hdr		=	init_smb2_rsp_hdr,
 	.set_rsp_status		=	set_smb2_rsp_status,
 	.allocate_rsp_buf       =       smb2_allocate_rsp_buf,
