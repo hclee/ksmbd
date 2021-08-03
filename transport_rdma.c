@@ -1616,6 +1616,8 @@ static int smb_direct_negotiate(struct smb_direct_transport *t)
 	req = (struct smb_direct_negotiate_req *)recvmsg->packet;
 	t->max_recv_size = min_t(int, t->max_recv_size,
 				 le32_to_cpu(req->preferred_send_size));
+	t->max_fragmented_recv_size = min_t(int, t->recv_credit_max * t->max_recv_size,
+					    t->max_recv_size << 7);
 	t->max_send_size = min_t(int, t->max_send_size,
 				 le32_to_cpu(req->max_receive_size));
 	t->max_fragmented_send_size =
