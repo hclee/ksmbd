@@ -35,8 +35,6 @@
 #include "smbstatus.h"
 #include "transport_rdma.h"
 
-#define SMB_DIRECT_PORT	5445
-
 #define SMB_DIRECT_VERSION_LE		cpu_to_le16(0x0100)
 
 /* SMB_DIRECT negotiation timeout in seconds */
@@ -569,6 +567,8 @@ static void recv_done(struct ib_cq *cq, struct ib_wc *wc)
 				t->full_packet_received = true;
 
 			enqueue_reassembly(t, recvmsg, data_length);
+			/* TODO: wake up only when full_packet_received or
+			 * first_segment is true */
 			wake_up_interruptible(&t->wait_reassembly_queue);
 
 			spin_lock(&t->receive_credit_lock);
@@ -593,9 +593,11 @@ static void recv_done(struct ib_cq *cq, struct ib_wc *wc)
 		    SMB_DIRECT_RESPONSE_REQUESTED)
 			queue_work(smb_direct_wq, &t->send_immediate_work);
 
+		/* TODO: wake up only when send_credits > needed credits */
 		if (atomic_read(&t->send_credits) > 0)
 			wake_up_interruptible(&t->wait_send_credits);
 
+		/* TODO: call smbd_direct_post_recv_credits instead of wq */
 		if (is_receive_credit_post_required(receive_credits, avail_recvmsg_count))
 			mod_delayed_work(smb_direct_wq,
 					 &t->post_recv_credits_work, 0);
@@ -650,10 +652,8 @@ static int smb_direct_read(struct ksmbd_transport *t, char *buf,
 	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
 
 again:
-	if (st->status != SMB_DIRECT_CS_CONNECTED) {
-		pr_err("disconnected\n");
+	if (st->status != SMB_DIRECT_CS_CONNECTED)
 		return -ENOTCONN;
-	}
 
 	/*
 	 * No need to hold the reassembly queue lock all the time as we are
@@ -1860,11 +1860,29 @@ err:
 	return ret;
 }
 
+static void dump_ib_device(struct ib_device *dev)
+{
+	struct ib_device_attr *attrs = &dev->attrs;
+
+	ksmbd_debug(RDMA, "device %s:\n", dev->name);
+	ksmbd_debug(RDMA, "max_qp[%d] max_qp_wr[%d] max_sge[%d, %d, %d, %d]\n",
+		    attrs->max_qp, attrs->max_qp_wr,
+		    attrs->max_send_sge, attrs->max_recv_sge, attrs->max_sge_rd,
+		    attrs->max_sgl_rd);
+	ksmbd_debug(RDMA, "max_cq[%d] max_cqe[%d] max_mr[%d]\n",
+		    attrs->max_cq, attrs->max_cqe, attrs->max_mr);
+	ksmbd_debug(RDMA, "max_fast_page_list_len[%d] max_pi_fast[%d]\n",
+		    attrs->max_fast_reg_page_list_len,
+		    attrs->max_pi_fast_reg_page_list_len);
+}
+
 static int smb_direct_prepare(struct ksmbd_transport *t)
 {
 	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
 	int ret;
 	struct ib_qp_cap qp_cap;
+
+	dump_ib_device(st->cm_id->device);
 
 	ret = smb_direct_init_params(st, &qp_cap);
 	if (ret) {
@@ -1973,6 +1991,12 @@ static int smb_direct_listen(int port)
 		return PTR_ERR(cm_id);
 	}
 
+	ret = rdma_set_afonly(cm_id, 1);
+	if (ret) {
+		pr_err("Can't set_afonly: %d\n", ret);
+		goto err;
+	}
+
 	ret = rdma_bind_addr(cm_id, (struct sockaddr *)&sin);
 	if (ret) {
 		pr_err("Can't bind: %d\n", ret);
@@ -1986,6 +2010,8 @@ static int smb_direct_listen(int port)
 		pr_err("Can't listen: %d\n", ret);
 		goto err;
 	}
+	ksmbd_debug(RDMA, "RDMA listening on %pIS:%u\n",
+		    &sin.sin_addr, be16_to_cpu(sin.sin_port));
 	return 0;
 err:
 	smb_direct_listener.cm_id = NULL;
@@ -1993,11 +2019,71 @@ err:
 	return ret;
 }
 
+static int smb_direct_ib_client_add(struct ib_device *ib_dev)
+{
+	unsigned long long speed;
+	int i;
+
+	if (!ib_dev->ops.get_netdev)
+		return 0;
+
+	ksmbd_debug(RDMA, "ib device %s added. ports %d\n",
+		    ib_dev->name, ib_dev->phys_port_cnt);
+	for (i = 0; i < ib_dev->phys_port_cnt; i++) {
+		struct net_device *net_dev;
+		struct in_device *in_dev;
+		const struct in_ifaddr *ifa;
+
+		net_dev = ib_dev->ops.get_netdev(ib_dev, i + 1);
+		if (!net_dev)
+			continue;
+		if (net_dev->ethtool_ops && net_dev->ethtool_ops->get_link_ksettings) {
+			struct ethtool_link_ksettings cmd;
+			net_dev->ethtool_ops->get_link_ksettings(net_dev, &cmd);
+			speed = cmd.base.speed;
+		} else
+			speed = SPEED_1000;
+		speed *= 1000000;
+
+		in_dev = in_dev_get(net_dev);
+		if (!in_dev) {
+			dev_put(net_dev);
+			continue;
+		}
+
+		rcu_read_lock();
+		in_dev_for_each_ifa_rcu(ifa, in_dev) {
+			pr_err(" addr %pI4", &ifa->ifa_address);
+			break;
+		}
+		rcu_read_unlock();
+		pr_err("\n");
+
+		pr_err("port %d: netdev %s %p index %d speed %llu",
+		       i, net_dev->name, net_dev, net_dev->ifindex, speed);
+
+		in_dev_put(in_dev);
+		dev_put(net_dev);
+	}
+	return 0;
+}
+
+static struct ib_client ksmbd_ib_client = {
+	.name	= "ksmbd_smbdirect",
+	.add	= smb_direct_ib_client_add,
+};
+
 int ksmbd_rdma_init(void)
 {
 	int ret;
 
 	smb_direct_listener.cm_id = NULL;
+
+	ret = ib_register_client(&ksmbd_ib_client);
+	if (ret) {
+		pr_err("failed to ib_register_client\n");
+		return ret;
+	}
 
 	/* When a client is running out of send credits, the credits are
 	 * granted by the server's sending a packet using this queue.
@@ -2024,8 +2110,10 @@ int ksmbd_rdma_init(void)
 
 int ksmbd_rdma_destroy(void)
 {
-	if (smb_direct_listener.cm_id)
+	if (smb_direct_listener.cm_id) {
 		rdma_destroy_id(smb_direct_listener.cm_id);
+		ib_unregister_client(&ksmbd_ib_client);
+	}
 	smb_direct_listener.cm_id = NULL;
 
 	if (smb_direct_wq) {
@@ -2033,6 +2121,7 @@ int ksmbd_rdma_destroy(void)
 		destroy_workqueue(smb_direct_wq);
 		smb_direct_wq = NULL;
 	}
+
 	return 0;
 }
 
@@ -2047,6 +2136,8 @@ bool ksmbd_rdma_capable_netdev(struct net_device *netdev)
 			rdma_capable = true;
 		ib_device_put(ibdev);
 	}
+	pr_err("%s: netdev %s %p rdma %d\n", __func__,
+	       netdev->name, netdev, rdma_capable);
 	return rdma_capable;
 }
 

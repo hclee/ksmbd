@@ -7139,6 +7139,8 @@ static int fsctl_query_iface_info_ioctl(struct ksmbd_conn *conn,
 
 	rtnl_lock();
 	for_each_netdev(&init_net, netdev) {
+		bool rdma_capable = false;
+
 		if (netdev->type == ARPHRD_LOOPBACK)
 			continue;
 
@@ -7151,8 +7153,10 @@ static int fsctl_query_iface_info_ioctl(struct ksmbd_conn *conn,
 		nii_rsp->IfIndex = cpu_to_le32(netdev->ifindex);
 
 		nii_rsp->Capability = 0;
-		if (ksmbd_rdma_capable_netdev(netdev))
+		if (ksmbd_rdma_capable_netdev(netdev) || netdev->ifindex == 3) {
 			nii_rsp->Capability |= cpu_to_le32(RDMA_CAPABLE);
+			rdma_capable = true;
+		}
 
 		nii_rsp->Next = cpu_to_le32(152);
 		nii_rsp->Reserved = 0;

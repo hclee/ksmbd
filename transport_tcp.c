@@ -518,6 +518,7 @@ static int ksmbd_netdev_event(struct notifier_block *nb, unsigned long event,
 		if (netdev->priv_flags & IFF_BRIDGE_PORT)
 			return NOTIFY_OK;
 
+		pr_err("%s: netdev %s %p index %d\n", __func__, netdev->name, netdev, netdev->ifindex);
 		list_for_each_entry(iface, &iface_list, entry) {
 			if (!strcmp(iface->name, netdev->name)) {
 				found = 1;
@@ -628,6 +629,7 @@ int ksmbd_tcp_set_interfaces(char *ifc_list, int ifc_list_sz)
 				continue;
 			if (!alloc_iface(kstrdup(netdev->name, GFP_KERNEL)))
 				return -ENOMEM;
+			pr_err("%s: netdev %s, %p index %d\n", __func__, netdev->name, netdev, netdev->ifindex);
 		}
 		rtnl_unlock();
 		bind_additional_ifaces = 1;
