@@ -35,8 +35,6 @@
 #include "smbstatus.h"
 #include "transport_rdma.h"
 
-#define SMB_DIRECT_PORT	5445
-
 #define SMB_DIRECT_VERSION_LE		cpu_to_le16(0x0100)
 
 /* SMB_DIRECT negotiation timeout in seconds */
@@ -76,7 +74,7 @@ static int smb_direct_max_fragmented_recv_size = 1024 * 1024;
 /*  The maximum single-message size which can be received */
 static int smb_direct_max_receive_size = 8192;
 
-static int smb_direct_max_read_write_size = 1024 * 1024;
+static int smb_direct_max_read_write_size = 1048512;
 
 static int smb_direct_max_outstanding_rw_ops = 8;
 
@@ -651,10 +649,8 @@ static int smb_direct_read(struct ksmbd_transport *t, char *buf,
 	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
 
 again:
-	if (st->status != SMB_DIRECT_CS_CONNECTED) {
-		pr_err("disconnected\n");
+	if (st->status != SMB_DIRECT_CS_CONNECTED)
 		return -ENOTCONN;
-	}
 
 	/*
 	 * No need to hold the reassembly queue lock all the time as we are
@@ -1619,8 +1615,8 @@ static int smb_direct_negotiate(struct smb_direct_transport *t)
 				 le32_to_cpu(req->preferred_send_size));
 	t->max_send_size = min_t(int, t->max_send_size,
 				 le32_to_cpu(req->max_receive_size));
-	t->max_fragmented_send_size =
-			le32_to_cpu(req->max_fragmented_size);
+	t->max_fragmented_recv_size = (t->recv_credit_max * t->max_recv_size) / 2;
+	t->max_fragmented_send_size = le32_to_cpu(req->max_fragmented_size);
 
 	ret = smb_direct_send_negotiate_response(t, ret);
 out:
@@ -1709,7 +1705,7 @@ static int smb_direct_init_params(struct smb_direct_transport *t,
 	cap->max_send_sge = SMB_DIRECT_MAX_SEND_SGES;
 	cap->max_recv_sge = SMB_DIRECT_MAX_RECV_SGES;
 	cap->max_inline_data = 0;
-	cap->max_rdma_ctxs = 0;
+	cap->max_rdma_ctxs = smb_direct_max_outstanding_rw_ops;
 	return 0;
 }
 
@@ -1970,6 +1966,12 @@ static int smb_direct_listen(int port)
 	if (IS_ERR(cm_id)) {
 		pr_err("Can't create cm id: %ld\n", PTR_ERR(cm_id));
 		return PTR_ERR(cm_id);
+	}
+
+	ret = rdma_set_afonly(cm_id, 1);
+	if (ret) {
+		pr_err("Can't set_afonly: %d\n", ret);
+		goto err;
 	}
 
 	ret = rdma_bind_addr(cm_id, (struct sockaddr *)&sin);
