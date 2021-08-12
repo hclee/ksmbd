@@ -74,7 +74,7 @@ static int smb_direct_max_fragmented_recv_size = 1024 * 1024;
 /*  The maximum single-message size which can be received */
 static int smb_direct_max_receive_size = 8192;
 
-static int smb_direct_max_read_write_size = 1024 * 1024;
+static int smb_direct_max_read_write_size = 1048512;
 
 static int smb_direct_max_outstanding_rw_ops = 8;
 
@@ -1617,8 +1617,9 @@ static int smb_direct_negotiate(struct smb_direct_transport *t)
 	req = (struct smb_direct_negotiate_req *)recvmsg->packet;
 	t->max_recv_size = min_t(int, t->max_recv_size,
 				 le32_to_cpu(req->preferred_send_size));
-	t->max_fragmented_recv_size = min_t(int, t->recv_credit_max * t->max_recv_size,
-					    t->max_recv_size << 7);
+	//t->max_fragmented_recv_size = min_t(int, t->recv_credit_max * t->max_recv_size,
+					    //t->max_recv_size << 7);
+	t->max_fragmented_recv_size = smb_direct_max_fragmented_recv_size;
 	t->max_send_size = min_t(int, t->max_send_size,
 				 le32_to_cpu(req->max_receive_size));
 	t->max_fragmented_send_size =
@@ -1711,7 +1712,7 @@ static int smb_direct_init_params(struct smb_direct_transport *t,
 	cap->max_send_sge = SMB_DIRECT_MAX_SEND_SGES;
 	cap->max_recv_sge = SMB_DIRECT_MAX_RECV_SGES;
 	cap->max_inline_data = 0;
-	cap->max_rdma_ctxs = 0;
+	cap->max_rdma_ctxs = smb_direct_max_outstanding_rw_ops;
 	return 0;
 }
 
@@ -2153,8 +2154,6 @@ bool ksmbd_rdma_capable_netdev(struct net_device *netdev)
 			rdma_capable = true;
 		ib_device_put(ibdev);
 	}
-	pr_err("%s: netdev %s %p rdma %d\n", __func__,
-	       netdev->name, netdev, rdma_capable);
 	return rdma_capable;
 }
 

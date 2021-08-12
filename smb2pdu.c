@@ -6267,6 +6267,7 @@ static ssize_t smb2_write_rdma_channel(struct ksmbd_work *work,
 	work->need_invalidate_rkey =
 		(req->Channel == SMB2_CHANNEL_RDMA_V1_INVALIDATE);
 	work->remote_key = le32_to_cpu(desc->token);
+	length = le32_to_cpu(desc->length);
 
 	data_buf = kvmalloc(length, GFP_KERNEL | __GFP_ZERO);
 	if (!data_buf)
