@@ -12,6 +12,8 @@
 #include <linux/sysfs.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
+#include <linux/inetdevice.h>
+#include <linux/ethtool.h>
 
 #include "server.h"
 #include "smb_common.h"
@@ -25,6 +27,9 @@
 int ksmbd_debug_types;
 
 struct ksmbd_server_config server_conf;
+
+LIST_HEAD(ksmbd_net_iface_list);
+DEFINE_SPINLOCK(ksmbd_net_iface_lock);
 
 enum SERVER_CTRL_TYPE {
 	SERVER_CTRL_TYPE_INIT,
@@ -345,6 +350,134 @@ static int server_conf_init(void)
 	return 0;
 }
 
+static struct ksmbd_net_iface *
+ksmbd_lookup_net_iface_unlocked(struct net_device *netdev)
+{
+	struct ksmbd_net_iface *iface;
+
+	list_for_each_entry(iface, &ksmbd_net_iface_list, list) {
+		if (strcmp(iface->name, netdev->name) == 0)
+			return iface;
+	}
+	return NULL;
+}
+
+int ksmbd_register_net_iface(struct net_device *net_dev,
+			     unsigned int capabilities)
+{
+	struct ksmbd_net_iface *iface, *iface_old;
+	struct in_device *in_dev;
+	struct inet6_dev *in6_dev;
+
+	if (net_dev->type == ARPHRD_LOOPBACK)
+		return -EINVAL;
+
+	spin_lock(&ksmbd_net_iface_lock);
+	iface = ksmbd_lookup_net_iface_unlocked(net_dev);
+	if (iface) {
+		iface->capabilities |= capabilities;
+		spin_unlock(&ksmbd_net_iface_lock);
+		return 0;
+	}
+	spin_unlock(&ksmbd_net_iface_lock);
+
+	iface = kzalloc(sizeof(*iface), GFP_KERNEL);
+	if (!iface)
+		return -ENOMEM;
+
+	iface->name = kstrdup(net_dev->name, GFP_KERNEL);
+	if (!iface->name) {
+		kfree(iface);
+		return -ENOMEM;
+	}
+	iface->capabilities = capabilities;
+	iface->ifindex = net_dev->ifindex;
+
+	/* rtnl lock? */
+	in_dev = in_dev_get(net_dev);
+	if (in_dev) {
+		struct in_ifaddr *ifa;
+
+		rcu_read_lock();
+		in_dev_for_each_ifa_rcu(ifa, in_dev) {
+			if (ifa->ifa_flags & IFA_F_SECONDARY)
+				continue;
+			iface->in4_addr.sin_family = AF_INET;
+			iface->in4_addr.sin_addr.s_addr = ifa->ifa_address;
+			break;
+
+		}
+		rcu_read_unlock();
+		in_dev_put(in_dev);
+	}
+
+	in6_dev = in6_dev_get(net_dev);
+	if (in6_dev) {
+		struct inet6_ifaddr *ifa;
+
+		read_lock_bh(&in6_dev->lock);
+		list_for_each_entry(ifa, &in6_dev->addr_list, if_list) {
+			if (ifa->flags & (IFA_F_TENTATIVE | IFA_F_DEPRECATED))
+				continue;
+			iface->in6_addr.sin6_family = AF_INET6;
+			memcpy(&iface->in6_addr.sin6_addr.s6_addr,
+			       ifa->addr.s6_addr, 16);
+		}
+		read_unlock_bh(&in6_dev->lock);
+		in6_dev_put(in6_dev);
+	}
+
+	if (net_dev->ethtool_ops->get_link_ksettings) {
+		struct ethtool_link_ksettings cmd;
+
+		net_dev->ethtool_ops->get_link_ksettings(net_dev, &cmd);
+		iface->speed = cmd.base.speed * 1000000;
+	} else
+		iface->speed = SPEED_1000 * 1000000;
+
+	spin_lock(&ksmbd_net_iface_lock);
+	iface_old = ksmbd_lookup_net_iface_unlocked(net_dev);
+	if (iface_old) {
+		iface_old->capabilities |= capabilities;
+		spin_unlock(&ksmbd_net_iface_lock);
+		kfree(iface->name);
+		kfree(iface);
+		return 0;
+	}
+	list_add_tail(&iface->list, &ksmbd_net_iface_list);
+	spin_unlock(&ksmbd_net_iface_lock);
+	return 0;
+}
+
+void ksmbd_unregister_net_iface(struct net_device *net_dev)
+{
+	struct ksmbd_net_iface *iface;
+
+	spin_lock(&ksmbd_net_iface_lock);
+	iface = ksmbd_lookup_net_iface_unlocked(net_dev);
+	if (iface)
+		list_del(&iface->list);
+	spin_unlock(&ksmbd_net_iface_lock);
+
+	if (iface) {
+		kfree(iface->name);
+		kfree(iface);
+	}
+}
+
+static void ksmbd_destroy_net_ifaces(void)
+{
+	struct ksmbd_net_iface *iface, *tmp;
+
+	spin_lock(&ksmbd_net_iface_lock);
+	list_for_each_entry_safe(iface, tmp, &ksmbd_net_iface_list, list) {
+		list_del(&iface->list);
+		kfree(iface->name);
+		kfree(iface);
+	}
+	spin_unlock(&ksmbd_net_iface_lock);
+}
+
 static void server_ctrl_handle_init(struct server_ctrl_struct *ctrl)
 {
 	int ret;
@@ -362,6 +495,7 @@ static void server_ctrl_handle_reset(struct server_ctrl_struct *ctrl)
 {
 	ksmbd_ipc_soft_reset();
 	ksmbd_conn_transport_destroy();
+	ksmbd_destroy_net_ifaces();
 	server_conf_free();
 	server_conf_init();
 	WRITE_ONCE(server_conf.state, SERVER_STATE_STARTING_UP);

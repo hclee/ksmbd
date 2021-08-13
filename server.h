@@ -6,6 +6,7 @@
 #ifndef __SERVER_H__
 #define __SERVER_H__
 
+#include <net/addrconf.h>
 #include "smbacl.h"
 
 /*
@@ -46,6 +47,23 @@ struct ksmbd_server_config {
 };
 
 extern struct ksmbd_server_config server_conf;
+
+struct ksmbd_net_iface {
+	struct list_head list;
+	char *name;
+	int ifindex;
+	struct sockaddr_in in4_addr;
+	struct sockaddr_in6 in6_addr;
+	unsigned long long speed;
+	unsigned int capabilities;
+};
+
+extern struct list_head ksmbd_net_iface_list;
+extern spinlock_t ksmbd_net_iface_lock;
+
+int ksmbd_register_net_iface(struct net_device *net_dev,
+			     unsigned int capabilities);
+void ksmbd_unregister_net_iface(struct net_device *net_dev);
 
 int ksmbd_set_netbios_name(char *v);
 int ksmbd_set_server_string(char *v);

@@ -7111,112 +7111,54 @@ out:
 	return ret;
 }
 
-static __be32 idev_ipv4_address(struct in_device *idev)
-{
-	__be32 addr = 0;
-
-	struct in_ifaddr *ifa;
-
-	rcu_read_lock();
-	in_dev_for_each_ifa_rcu(ifa, idev) {
-		if (ifa->ifa_flags & IFA_F_SECONDARY)
-			continue;
-
-		addr = ifa->ifa_address;
-		break;
-	}
-	rcu_read_unlock();
-	return addr;
-}
-
 static int fsctl_query_iface_info_ioctl(struct ksmbd_conn *conn,
 					struct smb2_ioctl_req *req,
 					struct smb2_ioctl_rsp *rsp)
 {
 	struct network_interface_info_ioctl_rsp *nii_rsp = NULL;
 	int nbytes = 0;
-	struct net_device *netdev;
 	struct sockaddr_storage_rsp *sockaddr_storage;
-	unsigned int flags;
-	unsigned long long speed;
 	struct sockaddr_in6 *csin6 = (struct sockaddr_in6 *)&conn->peer_addr;
+	struct ksmbd_net_iface *iface;
 
-	rtnl_lock();
-	for_each_netdev(&init_net, netdev) {
-		if (netdev->type == ARPHRD_LOOPBACK)
-			continue;
-
-		flags = dev_get_flags(netdev);
-		if (!(flags & IFF_RUNNING))
-			continue;
-
+	spin_lock(&ksmbd_net_iface_lock);
+	list_for_each_entry(iface, &ksmbd_net_iface_list, list) {
 		nii_rsp = (struct network_interface_info_ioctl_rsp *)
 				&rsp->Buffer[nbytes];
-		nii_rsp->IfIndex = cpu_to_le32(netdev->ifindex);
+		nii_rsp->IfIndex = cpu_to_le32(iface->ifindex);
 
-		nii_rsp->Capability = 0;
-		if (ksmbd_rdma_capable_netdev(netdev) || netdev->ifindex == 3)
-			nii_rsp->Capability |= cpu_to_le32(RDMA_CAPABLE);
+		nii_rsp->Capability =
+			cpu_to_le32(iface->capabilities & RSS_CAPABLE);
+		nii_rsp->Capability |=
+			cpu_to_le32(iface->capabilities & RDMA_CAPABLE);
 
 		nii_rsp->Next = cpu_to_le32(152);
 		nii_rsp->Reserved = 0;
-
-		if (netdev->ethtool_ops->get_link_ksettings) {
-			struct ethtool_link_ksettings cmd;
-
-			netdev->ethtool_ops->get_link_ksettings(netdev, &cmd);
-			speed = cmd.base.speed;
-		} else {
-			pr_err("%s %s\n", netdev->name,
-			       "speed is unknown, defaulting to 1Gb/sec");
-			speed = SPEED_1000;
-		}
-
-		speed *= 1000000;
-		nii_rsp->LinkSpeed = cpu_to_le64(speed);
+		nii_rsp->LinkSpeed = cpu_to_le64(iface->speed);
 
 		sockaddr_storage = (struct sockaddr_storage_rsp *)
 					nii_rsp->SockAddr_Storage;
 		memset(sockaddr_storage, 0, 128);
-
 		if (conn->peer_addr.ss_family == PF_INET ||
 		    ipv6_addr_v4mapped(&csin6->sin6_addr)) {
-			struct in_device *idev;
-
 			sockaddr_storage->Family = cpu_to_le16(INTERNETWORK);
 			sockaddr_storage->addr4.Port = 0;
-
-			idev = __in_dev_get_rtnl(netdev);
-			if (!idev)
-				continue;
 			sockaddr_storage->addr4.IPv4address =
-						idev_ipv4_address(idev);
+				iface->in4_addr.sin_addr.s_addr;
 		} else {
-			struct inet6_dev *idev6;
-			struct inet6_ifaddr *ifa;
 			__u8 *ipv6_addr = sockaddr_storage->addr6.IPv6address;
 
 			sockaddr_storage->Family = cpu_to_le16(INTERNETWORKV6);
 			sockaddr_storage->addr6.Port = 0;
 			sockaddr_storage->addr6.FlowInfo = 0;
-
-			idev6 = __in6_dev_get(netdev);
-			if (!idev6)
-				continue;
-
-			list_for_each_entry(ifa, &idev6->addr_list, if_list) {
-				if (ifa->flags & (IFA_F_TENTATIVE |
-							IFA_F_DEPRECATED))
-					continue;
-				memcpy(ipv6_addr, ifa->addr.s6_addr, 16);
-				break;
-			}
+			memcpy(ipv6_addr,
+			       iface->in6_addr.sin6_addr.s6_addr, 16);
 			sockaddr_storage->addr6.ScopeId = 0;
 		}
 
 		nbytes += sizeof(struct network_interface_info_ioctl_rsp);
 	}
-	rtnl_unlock();
+	spin_unlock(&ksmbd_net_iface_lock);
 
 	/* zero if this is last one */
 	if (nii_rsp)

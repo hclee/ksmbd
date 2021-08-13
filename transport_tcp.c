@@ -518,6 +518,7 @@ static int ksmbd_netdev_event(struct notifier_block *nb, unsigned long event,
 		if (netdev->priv_flags & IFF_BRIDGE_PORT)
 			return NOTIFY_OK;
 
+		ksmbd_register_net_iface(netdev, 0);
 		list_for_each_entry(iface, &iface_list, entry) {
 			if (!strcmp(iface->name, netdev->name)) {
 				found = 1;
@@ -539,6 +540,7 @@ static int ksmbd_netdev_event(struct notifier_block *nb, unsigned long event,
 		}
 		break;
 	case NETDEV_DOWN:
+		ksmbd_unregister_net_iface(netdev);
 		list_for_each_entry(iface, &iface_list, entry) {
 			if (!strcmp(iface->name, netdev->name) &&
 			    iface->state == IFACE_STATE_CONFIGURED) {
