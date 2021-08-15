@@ -33,6 +33,7 @@
 #include "connection.h"
 #include "smb_common.h"
 #include "smbstatus.h"
+#include "server.h"
 #include "transport_rdma.h"
 
 #define SMB_DIRECT_VERSION_LE		cpu_to_le16(0x0100)
@@ -2011,11 +2012,57 @@ err:
 	return ret;
 }
 
+static int smb_direct_ib_client_add(struct ib_device *ib_dev)
+{
+	int i;
+
+	if (!ib_dev->ops.get_netdev)
+		return 0;
+	for (i = 0; i < ib_dev->phys_port_cnt; i++) {
+		struct net_device *net_dev;
+
+		net_dev = ib_dev->ops.get_netdev(ib_dev, i + 1);
+		if (net_dev && rdma_frwr_is_supported(&ib_dev->attrs))
+			ksmbd_register_net_iface(net_dev, RDMA_CAPABLE);
+		dev_put(net_dev);
+	}
+	return 0;
+}
+
+static void smb_direct_ib_client_remove(struct ib_device *ib_dev,
+					void *client_data)
+{
+	int i;
+
+	if (ib_dev->ops.get_netdev)
+		return;
+	for (i = 0; i < ib_dev->phys_port_cnt; i++) {
+		struct net_device *net_dev;
+
+		net_dev = ib_dev->ops.get_netdev(ib_dev, i + 1);
+		if (net_dev && rdma_frwr_is_supported(&ib_dev->attrs))
+			ksmbd_unregister_net_iface(net_dev);
+		dev_put(net_dev);
+	}
+}
+
+static struct ib_client ksmbd_ib_client = {
+	.name	= "ksmbd_smb_direct",
+	.add	= smb_direct_ib_client_add,
+	.remove	= smb_direct_ib_client_remove,
+};
+
 int ksmbd_rdma_init(void)
 {
 	int ret;
 
 	smb_direct_listener.cm_id = NULL;
+
+	ret = ib_register_client(&ksmbd_ib_client);
+	if (ret) {
+		pr_err("failed to ib_register_client\n");
+		return ret;
+	}
 
 	/* When a client is running out of send credits, the credits are
 	 * granted by the server's sending a packet using this queue.
@@ -2042,8 +2089,10 @@ int ksmbd_rdma_init(void)
 
 int ksmbd_rdma_destroy(void)
 {
-	if (smb_direct_listener.cm_id)
+	if (smb_direct_listener.cm_id) {
 		rdma_destroy_id(smb_direct_listener.cm_id);
+		ib_unregister_client(&ksmbd_ib_client);
+	}
 	smb_direct_listener.cm_id = NULL;
 
 	if (smb_direct_wq) {
