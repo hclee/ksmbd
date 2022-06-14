@@ -1535,6 +1535,7 @@ static int smb_direct_cm_handler(struct rdma_cm_id *cm_id,
 		wake_up_interruptible(&t->wait_status);
 		break;
 	}
+	case RDMA_CM_EVENT_TIMEWAIT_EXIT:
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
 	case RDMA_CM_EVENT_DISCONNECTED: {
 		t->status = SMB_DIRECT_CS_DISCONNECTED;
