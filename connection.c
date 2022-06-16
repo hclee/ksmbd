@@ -362,6 +362,7 @@ int ksmbd_conn_handler_loop(void *p)
 	}
 
 out:
+	pr_err("%s: wait for pending works\n", __func__);
 	/* Wait till all reference dropped to the Server object*/
 	while (atomic_read(&conn->r_count) > 0)
 		schedule_timeout(HZ);

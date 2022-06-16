@@ -344,6 +344,7 @@ static void smb_direct_disconnect_rdma_work(struct work_struct *work)
 			     disconnect_work);
 
 	if (t->status == SMB_DIRECT_CS_CONNECTED) {
+		pr_err("rdma_disconnect. cm_id=%p\n", t->cm_id);
 		t->status = SMB_DIRECT_CS_DISCONNECTING;
 		rdma_disconnect(t->cm_id);
 	}
@@ -425,7 +426,7 @@ static void free_transport(struct smb_direct_transport *t)
 
 	wake_up_interruptible(&t->wait_send_credits);
 
-	ksmbd_debug(RDMA, "wait for all send posted to IB to finish\n");
+	pr_err("wait for all send posted to IB to finish. cm_id=%p\n", t->cm_id);
 	wait_event(t->wait_send_pending,
 		   atomic_read(&t->send_pending) == 0);
 
@@ -439,7 +440,7 @@ static void free_transport(struct smb_direct_transport *t)
 		ib_destroy_qp(t->qp);
 	}
 
-	ksmbd_debug(RDMA, "drain the reassembly queue\n");
+	pr_err("drain the reassembly queue. cm_id=%p\n", t->cm_id);
 	do {
 		spin_lock(&t->reassembly_queue_lock);
 		recvmsg = get_first_reassembly(t);
@@ -453,6 +454,7 @@ static void free_transport(struct smb_direct_transport *t)
 	} while (recvmsg);
 	t->reassembly_data_length = 0;
 
+	pr_err("destroy queue. cm_id=%p\n", t->cm_id);
 	if (t->send_cq)
 		ib_free_cq(t->send_cq);
 	if (t->recv_cq)
@@ -551,10 +553,11 @@ static void recv_done(struct ib_cq *cq, struct ib_wc *wc)
 	t = recvmsg->transport;
 
 	if (wc->status != IB_WC_SUCCESS || wc->opcode != IB_WC_RECV) {
+		pr_err("Recv error. cm_id=%p status='%s (%d)' opcode=%d\n",
+		       t->cm_id,
+		       ib_wc_status_msg(wc->status), wc->status,
+		       wc->opcode);
 		if (wc->status != IB_WC_WR_FLUSH_ERR) {
-			pr_err("Recv error. status='%s (%d)' opcode=%d\n",
-			       ib_wc_status_msg(wc->status), wc->status,
-			       wc->opcode);
 			smb_direct_disconnect_rdma_connection(t);
 		}
 		put_empty_recvmsg(t, recvmsg);
@@ -691,7 +694,7 @@ static int smb_direct_read(struct ksmbd_transport *t, char *buf,
 
 again:
 	if (st->status != SMB_DIRECT_CS_CONNECTED) {
-		pr_err("disconnected\n");
+		pr_err("read: disconnected. cm_id=%p\n", st->cm_id);
 		return -ENOTCONN;
 	}
 
@@ -875,7 +878,8 @@ static void send_done(struct ib_cq *cq, struct ib_wc *wc)
 		    wc->opcode);
 
 	if (wc->status != IB_WC_SUCCESS || wc->opcode != IB_WC_SEND) {
-		pr_err("Send error. status='%s (%d)', opcode=%d\n",
+		pr_err("Send error. cm_id=%p status='%s (%d)', opcode=%d\n",
+		       t->cm_id,
 		       ib_wc_status_msg(wc->status), wc->status,
 		       wc->opcode);
 		smb_direct_disconnect_rdma_connection(t);
@@ -991,8 +995,10 @@ static int wait_for_credits(struct smb_direct_transport *t,
 					       atomic_read(total_credits) >= needed ||
 					       t->status != SMB_DIRECT_CS_CONNECTED);
 
-		if (t->status != SMB_DIRECT_CS_CONNECTED)
+		if (t->status != SMB_DIRECT_CS_CONNECTED) {
+			pr_err("send: disconnected cm_id=%p\n", t->cm_id);
 			return -ENOTCONN;
+		}
 		else if (ret < 0)
 			return ret;
 	} while (true);
@@ -1344,7 +1350,8 @@ static void read_write_done(struct ib_cq *cq, struct ib_wc *wc,
 
 	if (wc->status != IB_WC_SUCCESS) {
 		msg->status = -EIO;
-		pr_err("read/write error. opcode = %d, status = %s(%d)\n",
+		pr_err("read/write error. cm_id=%p opcode = %d, status = %s(%d)\n",
+		       t->cm_id,
 		       wc->opcode, ib_wc_status_msg(wc->status), wc->status);
 		if (wc->status != IB_WC_WR_FLUSH_ERR)
 			smb_direct_disconnect_rdma_connection(t);
@@ -1504,7 +1511,7 @@ static void smb_direct_disconnect(struct ksmbd_transport *t)
 {
 	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
 
-	ksmbd_debug(RDMA, "Disconnecting cm_id=%p\n", st->cm_id);
+	pr_err("Disconnecting cm_id=%p\n", st->cm_id);
 
 	smb_direct_disconnect_rdma_work(&st->disconnect_work);
 	wait_event_interruptible(st->wait_status,
@@ -1526,8 +1533,8 @@ static int smb_direct_cm_handler(struct rdma_cm_id *cm_id,
 {
 	struct smb_direct_transport *t = cm_id->context;
 
-	ksmbd_debug(RDMA, "RDMA CM event. cm_id=%p event=%s (%d)\n",
-		    cm_id, rdma_event_msg(event->event), event->event);
+	pr_err("RDMA CM event. cm_id=%p event=%s (%d)\n",
+	       cm_id, rdma_event_msg(event->event), event->event);
 
 	switch (event->event) {
 	case RDMA_CM_EVENT_ESTABLISHED: {
@@ -1992,7 +1999,7 @@ out:
 	list_del(&recvmsg->list);
 	spin_unlock_irq(&st->reassembly_queue_lock);
 	put_recvmsg(st, recvmsg);
-
+	pr_err("Negotiated. cm_id=%p ret=%d\n", st->cm_id, ret);
 	return ret;
 }
 
