@@ -362,6 +362,9 @@ int ksmbd_conn_handler_loop(void *p)
 	}
 
 out:
+	if (t->ops->rdma_read)
+		pr_err("%s: wait for pending works. cm_id=%p, count=%d\n",
+		       __func__, smb_direct_get_cm_id(t), atomic_read(&conn->r_count));
 	/* Wait till all reference dropped to the Server object*/
 	while (atomic_read(&conn->r_count) > 0)
 		schedule_timeout(HZ);
@@ -370,6 +373,9 @@ out:
 	if (default_conn_ops.terminate_fn)
 		default_conn_ops.terminate_fn(conn);
 	t->ops->disconnect(t);
+	if (t->ops->rdma_read)
+		pr_err("%s: loop exited. cm_id=%p\n",
+		       __func__, smb_direct_get_cm_id(t));
 	module_put(THIS_MODULE);
 	return 0;
 }

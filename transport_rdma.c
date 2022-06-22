@@ -244,6 +244,12 @@ smb_trans_direct_transfort(struct ksmbd_transport *t)
 	return container_of(t, struct smb_direct_transport, transport);
 }
 
+void *smb_direct_get_cm_id(struct ksmbd_transport *t)
+{
+	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
+	return st->cm_id;
+}
+
 static inline void
 *smb_direct_recvmsg_payload(struct smb_direct_recvmsg *recvmsg)
 {
@@ -425,7 +431,9 @@ static void free_transport(struct smb_direct_transport *t)
 
 	wake_up_interruptible(&t->wait_send_credits);
 
-	ksmbd_debug(RDMA, "wait for all send posted to IB to finish\n");
+	pr_err("wait for all send posted to IB to finish. cm_id=%p\n", t->cm_id);
+	if (t->qp)
+		ib_drain_qp(t->qp);
 	wait_event(t->wait_send_pending,
 		   atomic_read(&t->send_pending) == 0);
 
@@ -434,12 +442,11 @@ static void free_transport(struct smb_direct_transport *t)
 	cancel_work_sync(&t->send_immediate_work);
 
 	if (t->qp) {
-		ib_drain_qp(t->qp);
 		ib_mr_pool_destroy(t->qp, &t->qp->rdma_mrs);
 		ib_destroy_qp(t->qp);
 	}
 
-	ksmbd_debug(RDMA, "drain the reassembly queue\n");
+	pr_err("drain the reassembly queue. cm_id=%p\n", t->cm_id);
 	do {
 		spin_lock(&t->reassembly_queue_lock);
 		recvmsg = get_first_reassembly(t);
@@ -691,7 +698,7 @@ static int smb_direct_read(struct ksmbd_transport *t, char *buf,
 
 again:
 	if (st->status != SMB_DIRECT_CS_CONNECTED) {
-		pr_err("disconnected\n");
+		pr_err("read: disconnected. cm_id=%p\n", st->cm_id);
 		return -ENOTCONN;
 	}
 
@@ -1320,8 +1327,13 @@ done:
 	 * that means all the I/Os have been out and we are good to return
 	 */
 
-	wait_event(st->wait_send_pending,
-		   atomic_read(&st->send_pending) == 0);
+	while (wait_event_timeout(st->wait_send_pending,
+				  atomic_read(&st->send_pending) == 0,
+				  HZ) == 0) {
+		pr_err("waiting for send completed. cm_id=%p, send_pending=%d\n",
+		       st->cm_id, atomic_read(&st->send_pending));
+	}
+
 	return ret;
 }
 
@@ -1504,7 +1516,7 @@ static void smb_direct_disconnect(struct ksmbd_transport *t)
 {
 	struct smb_direct_transport *st = smb_trans_direct_transfort(t);
 
-	ksmbd_debug(RDMA, "Disconnecting cm_id=%p\n", st->cm_id);
+	pr_err("Disconnecting cm_id=%p\n", st->cm_id);
 
 	smb_direct_disconnect_rdma_work(&st->disconnect_work);
 	wait_event_interruptible(st->wait_status,
@@ -1526,8 +1538,8 @@ static int smb_direct_cm_handler(struct rdma_cm_id *cm_id,
 {
 	struct smb_direct_transport *t = cm_id->context;
 
-	ksmbd_debug(RDMA, "RDMA CM event. cm_id=%p event=%s (%d)\n",
-		    cm_id, rdma_event_msg(event->event), event->event);
+	pr_err("RDMA CM event. cm_id=%p event=%s (%d)\n",
+	       cm_id, rdma_event_msg(event->event), event->event);
 
 	switch (event->event) {
 	case RDMA_CM_EVENT_ESTABLISHED: {
@@ -1993,6 +2005,7 @@ out:
 	spin_unlock_irq(&st->reassembly_queue_lock);
 	put_recvmsg(st, recvmsg);
 
+	pr_err("Negotiated. cm_id=%p ret=%d\n", st->cm_id, ret);
 	return ret;
 }
 
