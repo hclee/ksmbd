@@ -163,6 +163,7 @@ struct smb_direct_transport {
 	struct delayed_work	post_recv_credits_work;
 	struct work_struct	send_immediate_work;
 	struct work_struct	disconnect_work;
+	struct work_struct	release_work;
 
 	bool			negotiation_requested;
 };
@@ -349,6 +350,19 @@ static void smb_direct_disconnect_rdma_work(struct work_struct *work)
 	}
 }
 
+static void smb_direct_release_work(struct work_struct *work)
+{
+	struct smb_direct_transport *t =
+		container_of(work, struct smb_direct_transport, release_work);
+
+	ib_drain_qp(t->qp);
+
+	t->status = SMB_DIRECT_CS_DISCONNECTED;
+	wake_up_interruptible(&t->wait_status);
+	wake_up_interruptible(&t->wait_reassembly_queue);
+	wake_up(&t->wait_send_credits);
+}
+
 static void
 smb_direct_disconnect_rdma_connection(struct smb_direct_transport *t)
 {
@@ -406,6 +420,7 @@ static struct smb_direct_transport *alloc_transport(struct rdma_cm_id *cm_id)
 			  smb_direct_post_recv_credits);
 	INIT_WORK(&t->send_immediate_work, smb_direct_send_immediate_work);
 	INIT_WORK(&t->disconnect_work, smb_direct_disconnect_rdma_work);
+	INIT_WORK(&t->release_work, smb_direct_release_work);
 
 	conn = ksmbd_conn_alloc();
 	if (!conn)
@@ -1537,10 +1552,8 @@ static int smb_direct_cm_handler(struct rdma_cm_id *cm_id,
 	}
 	case RDMA_CM_EVENT_DEVICE_REMOVAL:
 	case RDMA_CM_EVENT_DISCONNECTED: {
-		t->status = SMB_DIRECT_CS_DISCONNECTED;
-		wake_up_interruptible(&t->wait_status);
-		wake_up_interruptible(&t->wait_reassembly_queue);
-		wake_up(&t->wait_send_credits);
+		t->status = SMB_DIRECT_CS_DISCONNECTING;
+		queue_work(system_wq, &t->release_work);
 		break;
 	}
 	case RDMA_CM_EVENT_CONNECT_ERROR: {
